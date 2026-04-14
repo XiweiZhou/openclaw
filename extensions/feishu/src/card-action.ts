@@ -1,5 +1,5 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
-import { resolveFeishuAccount } from "./accounts.js";
+import type { ClawdbotConfig, RuntimeEnv } from "../runtime-api.js";
+import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent } from "./bot.js";
 import { decodeFeishuCardAction, buildFeishuCardActionTextFallback } from "./card-interaction.js";
 import {
@@ -34,6 +34,13 @@ const processedCardActionTokens = new Map<
   string,
   { status: "inflight" | "completed"; expiresAt: number }
 >();
+
+export class FeishuRetryableCardActionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "FeishuRetryableCardActionError";
+  }
+}
 
 export function resetProcessedFeishuCardActionTokensForTests(): void {
   processedCardActionTokens.clear();
@@ -174,7 +181,7 @@ export async function handleFeishuCardAction(params: {
   accountId?: string;
 }): Promise<void> {
   const { cfg, event, runtime, accountId } = params;
-  const account = resolveFeishuAccount({ cfg, accountId });
+  const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   const log = runtime?.log ?? console.log;
   const decoded = decodeFeishuCardAction({ event });
   const claimedToken = beginFeishuCardActionToken({
@@ -304,7 +311,11 @@ export async function handleFeishuCardAction(params: {
     });
     completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
   } catch (err) {
-    releaseFeishuCardActionToken({ token: event.token, accountId: account.accountId });
+    if (err instanceof FeishuRetryableCardActionError) {
+      releaseFeishuCardActionToken({ token: event.token, accountId: account.accountId });
+    } else {
+      completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
+    }
     throw err;
   }
 }

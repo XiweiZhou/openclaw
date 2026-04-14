@@ -1,4 +1,5 @@
 export * from "./src/active-listener.js";
+export * from "./src/action-runtime.js";
 export * from "./src/agent-tools-login.js";
 export * from "./src/auth-store.js";
 export * from "./src/auto-reply.js";
@@ -7,3 +8,5 @@ export * from "./src/login.js";
 export * from "./src/media.js";
 export * from "./src/send.js";
 export * from "./src/session.js";
+export { setWhatsAppRuntime } from "./src/runtime.js";
+export { startWebLoginWithQr, waitForWebLogin } from "./login-qr-runtime.js";

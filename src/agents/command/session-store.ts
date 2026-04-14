@@ -1,17 +1,33 @@
-import type { OpenClawConfig } from "../../config/config.js";
 import {
   mergeSessionEntry,
   setSessionRuntimeModel,
   type SessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
-import { setCliSessionId } from "../cli-session.js";
-import { resolveContextTokensForModel } from "../context.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { setCliSessionBinding, setCliSessionId } from "../cli-session.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { isCliProvider } from "../model-selection.js";
 import { deriveSessionTotalTokens, hasNonzeroUsage } from "../usage.js";
 
 type RunResult = Awaited<ReturnType<(typeof import("../pi-embedded.js"))["runEmbeddedPiAgent"]>>;
+
+let usageFormatModulePromise: Promise<typeof import("../../utils/usage-format.js")> | undefined;
+let contextModulePromise: Promise<typeof import("../context.js")> | undefined;
+
+async function getUsageFormatModule() {
+  usageFormatModulePromise ??= import("../../utils/usage-format.js");
+  return await usageFormatModulePromise;
+}
+
+async function getContextModule() {
+  contextModulePromise ??= import("../context.js");
+  return await contextModulePromise;
+}
+
+function resolveNonNegativeNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
 
 export async function updateSessionStoreAfterAgentRun(params: {
   cfg: OpenClawConfig;
@@ -44,6 +60,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
   const compactionsThisRun = Math.max(0, result.meta.agentMeta?.compactionCount ?? 0);
   const modelUsed = result.meta.agentMeta?.model ?? fallbackModel ?? defaultModel;
   const providerUsed = result.meta.agentMeta?.provider ?? fallbackProvider ?? defaultProvider;
+  const { resolveContextTokensForModel } = await getContextModule();
   const contextTokens =
     resolveContextTokensForModel({
       cfg,
@@ -51,6 +68,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       model: modelUsed,
       contextTokensOverride: params.contextTokensOverride,
       fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+      allowAsyncLoad: false,
     }) ?? DEFAULT_CONTEXT_TOKENS;
 
   const entry = sessionStore[sessionKey] ?? {
@@ -68,9 +86,14 @@ export async function updateSessionStoreAfterAgentRun(params: {
     model: modelUsed,
   });
   if (isCliProvider(providerUsed, cfg)) {
-    const cliSessionId = result.meta.agentMeta?.sessionId?.trim();
-    if (cliSessionId) {
-      setCliSessionId(next, providerUsed, cliSessionId);
+    const cliSessionBinding = result.meta.agentMeta?.cliSessionBinding;
+    if (cliSessionBinding?.sessionId?.trim()) {
+      setCliSessionBinding(next, providerUsed, cliSessionBinding);
+    } else {
+      const cliSessionId = result.meta.agentMeta?.sessionId?.trim();
+      if (cliSessionId) {
+        setCliSessionId(next, providerUsed, cliSessionId);
+      }
     }
   }
   next.abortedLastRun = result.meta.aborted ?? false;
@@ -78,13 +101,24 @@ export async function updateSessionStoreAfterAgentRun(params: {
     next.systemPromptReport = result.meta.systemPromptReport;
   }
   if (hasNonzeroUsage(usage)) {
+    const { estimateUsageCost, resolveModelCostConfig } = await getUsageFormatModule();
     const input = usage.input ?? 0;
     const output = usage.output ?? 0;
     const totalTokens = deriveSessionTotalTokens({
-      usage,
+      usage: promptTokens ? undefined : usage,
       contextTokens,
       promptTokens,
     });
+    const runEstimatedCostUsd = resolveNonNegativeNumber(
+      estimateUsageCost({
+        usage,
+        cost: resolveModelCostConfig({
+          provider: providerUsed,
+          model: modelUsed,
+          config: cfg,
+        }),
+      }),
+    );
     next.inputTokens = input;
     next.outputTokens = output;
     if (typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens > 0) {
@@ -96,6 +130,10 @@ export async function updateSessionStoreAfterAgentRun(params: {
     }
     next.cacheRead = usage.cacheRead ?? 0;
     next.cacheWrite = usage.cacheWrite ?? 0;
+    if (runEstimatedCostUsd !== undefined) {
+      next.estimatedCostUsd =
+        (resolveNonNegativeNumber(entry.estimatedCostUsd) ?? 0) + runEstimatedCostUsd;
+    }
   }
   if (compactionsThisRun > 0) {
     next.compactionCount = (entry.compactionCount ?? 0) + compactionsThisRun;

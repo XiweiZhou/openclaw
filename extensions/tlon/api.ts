@@ -1,2 +1,3 @@
-export * from "./src/setup-core.js";
-export * from "./src/setup-surface.js";
+export * from "./runtime-api.js";
+export { tlonPlugin } from "./src/channel.js";
+export { setTlonRuntime } from "./src/runtime.js";
