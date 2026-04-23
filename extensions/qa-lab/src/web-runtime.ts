@@ -93,7 +93,7 @@ export async function qaWebWait(params: QaWebWaitParams) {
   }
   if (params.text) {
     await session.page.waitForFunction(
-      (expected) => document.body?.innerText?.toLowerCase().includes(expected.toLowerCase()),
+      (expected) => document.body?.textContent?.toLowerCase().includes(expected.toLowerCase()),
       params.text,
       { timeout: timeoutMs },
     );
@@ -119,7 +119,7 @@ export async function qaWebSnapshot(params: QaWebSnapshotParams) {
   const timeoutMs = resolveTimeoutMs(params.timeoutMs);
   const body = session.page.locator("body");
   await body.waitFor({ timeout: timeoutMs });
-  const text = await body.innerText({ timeout: timeoutMs });
+  const text = (await body.textContent({ timeout: timeoutMs })) ?? "";
   const maxChars =
     typeof params.maxChars === "number" && Number.isFinite(params.maxChars)
       ? Math.max(1, Math.floor(params.maxChars))
@@ -144,11 +144,23 @@ export async function qaWebEvaluate<T = unknown>(params: QaWebEvaluateParams): P
   ])) as T;
 }
 
-export async function closeAllQaWebSessions(): Promise<void> {
-  const active = [...sessions.values()];
-  sessions.clear();
+export async function closeQaWebSessions(pageIds?: Iterable<string>): Promise<void> {
+  const active = pageIds
+    ? [...pageIds].flatMap((pageId) => {
+        const session = sessions.get(pageId);
+        sessions.delete(pageId);
+        return session ? [session] : [];
+      })
+    : [...sessions.values()];
+  if (!pageIds) {
+    sessions.clear();
+  }
   for (const session of active) {
     await session.context.close().catch(() => {});
     await session.browser.close().catch(() => {});
   }
+}
+
+export async function closeAllQaWebSessions(): Promise<void> {
+  await closeQaWebSessions();
 }
